@@ -3,131 +3,139 @@
   <head>
     <meta charset="utf-8">
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-    <title>Unity Web Player | ManifoldSimulator</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Manifold Simulator</title>
     <link rel="shortcut icon" href="TemplateData/favicon.ico">
-    <link rel="stylesheet" href="TemplateData/style.css">
+    <style>
+      html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #1b1d21; font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+      #unity-container { position: fixed; inset: 0; display: none; }
+      #unity-canvas { width: 100%; height: 100%; display: block; background: #5c6675; }
+      #unity-loading { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 280px; color: #e6e6e6; text-align: center; font-size: 14px; }
+      #unity-progress { margin-top: 10px; height: 6px; border-radius: 3px; background: #3a3e46; overflow: hidden; }
+      #unity-progress-full { width: 0; height: 100%; background: #46c455; }
+      #unity-fullscreen { position: absolute; right: 12px; bottom: 12px; width: 38px; height: 38px; border: none; border-radius: 6px; cursor: pointer; opacity: 0.7;
+        background: rgba(0,0,0,0.35) url("TemplateData/fullscreen-button.png") center / 24px no-repeat; }
+      #unity-fullscreen:hover { opacity: 1; }
+      #unity-warning { position: absolute; left: 50%; top: 5%; transform: translateX(-50%); display: none; }
+
+      #gate { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+      #gate form { width: 320px; padding: 28px 28px 22px; border-radius: 10px; background: #2a2d33; box-shadow: 0 10px 30px rgba(0,0,0,0.4); color: #e6e6e6; text-align: center; }
+      #gate h1 { margin: 0 0 6px; font-size: 20px; font-weight: 600; }
+      #gate p { margin: 0 0 18px; font-size: 13px; color: #a8adb7; }
+      #gate input { width: 100%; box-sizing: border-box; padding: 12px; font-size: 24px; letter-spacing: 10px; text-align: center; border-radius: 6px;
+        border: 1px solid #4a4f57; background: #1b1d21; color: #ffffff; outline: none; }
+      #gate input:focus { border-color: #46c455; }
+      #gate button { margin-top: 14px; width: 100%; padding: 11px; font-size: 15px; font-weight: 600; border: none; border-radius: 6px; background: #46c455; color: #ffffff; cursor: pointer; }
+      #gate button:disabled { background: #3a3e46; color: #7d838e; cursor: default; }
+      #gate .error { min-height: 18px; margin-top: 10px; font-size: 13px; color: #ff6b6b; }
+    </style>
   </head>
   <body>
-    <div id="unity-container" class="unity-desktop">
-      <canvas id="unity-canvas" width=960 height=600 tabindex="-1"></canvas>
-      <div id="unity-loading-bar">
-        <div id="unity-logo"></div>
-        <div id="unity-progress-bar-empty">
-          <div id="unity-progress-bar-full"></div>
-        </div>
-      </div>
-      <div id="unity-warning"> </div>
-      <div id="unity-footer">
-        <div id="unity-logo-title-footer"></div>
-        <div id="unity-fullscreen-button"></div>
-        <div id="unity-build-title">ManifoldSimulator</div>
-      </div>
+    <div id="gate">
+      <form autocomplete="off">
+        <h1>Manifold Simulator</h1>
+        <p>Enter the 6-digit access code</p>
+        <input id="gate-code" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6" autofocus>
+        <button id="gate-open" type="submit" disabled>Open</button>
+        <div id="gate-error" class="error"></div>
+      </form>
     </div>
+
+    <div id="unity-container">
+      <canvas id="unity-canvas" tabindex="-1"></canvas>
+      <div id="unity-loading">Loading simulator...<div id="unity-progress"><div id="unity-progress-full"></div></div></div>
+      <div id="unity-warning"></div>
+      <button id="unity-fullscreen" title="Fullscreen"></button>
+    </div>
+
     <script>
-      var canvas = document.querySelector("#unity-canvas");
+      // Simple access gate: the page holds only a SHA-256 hash of the code, and the simulator is not downloaded
+      // until the right code is entered. This keeps casual visitors out; it is not real security (the build files are public).
+      var PIN_HASH = "44e0188c66177ea86f726fdab53ba4629986cf5b04c3973ece38c59087da5fbe";
+      var PIN_SALT = "manifold-simulator-demo:";
+      var UNLOCK_KEY = "manifold-simulator-unlocked";
 
-      // Shows a temporary message banner/ribbon for a few seconds, or
-      // a permanent error message on top of the canvas if type=='error'.
-      // If type=='warning', a yellow highlight color is used.
-      // Modify or remove this function to customize the visually presented
-      // way that non-critical warnings and error messages are presented to the
-      // user.
+      async function sha256Hex(text) {
+        var bytes = new TextEncoder().encode(text);
+        var digest = await crypto.subtle.digest("SHA-256", bytes);
+        return Array.from(new Uint8Array(digest)).map(function (b) { return b.toString(16).padStart(2, "0"); }).join("");
+      }
+
+      var codeInput = document.getElementById("gate-code");
+      var openButton = document.getElementById("gate-open");
+      var gateError = document.getElementById("gate-error");
+
+      codeInput.addEventListener("input", function () {
+        codeInput.value = codeInput.value.replace(/\D/g, "").slice(0, 6);
+        openButton.disabled = codeInput.value.length !== 6;
+        gateError.textContent = "";
+      });
+
+      document.querySelector("#gate form").addEventListener("submit", async function (e) {
+        e.preventDefault();
+        if (codeInput.value.length !== 6) return;
+        var hash = await sha256Hex(PIN_SALT + codeInput.value);
+        if (hash === PIN_HASH) {
+          try { sessionStorage.setItem(UNLOCK_KEY, hash); } catch (err) { }
+          startSimulator();
+        } else {
+          gateError.textContent = "Wrong code. Please try again.";
+          codeInput.value = "";
+          openButton.disabled = true;
+          codeInput.focus();
+        }
+      });
+
       function unityShowBanner(msg, type) {
-        var warningBanner = document.querySelector("#unity-warning");
-        function updateBannerVisibility() {
-          warningBanner.style.display = warningBanner.children.length ? 'block' : 'none';
-        }
-        var div = document.createElement('div');
+        var banner = document.querySelector("#unity-warning");
+        var div = document.createElement("div");
         div.innerHTML = msg;
-        warningBanner.appendChild(div);
-        if (type == 'error') div.style = 'background: red; padding: 10px;';
-        else {
-          if (type == 'warning') div.style = 'background: yellow; padding: 10px;';
-          setTimeout(function() {
-            warningBanner.removeChild(div);
-            updateBannerVisibility();
-          }, 5000);
-        }
-        updateBannerVisibility();
+        div.style = "padding: 10px; border-radius: 6px; background: " + (type == "error" ? "#c0392b" : "#f0b429") + "; color: #000;";
+        banner.appendChild(div);
+        banner.style.display = "block";
+        if (type != "error") setTimeout(function () { banner.removeChild(div); banner.style.display = banner.children.length ? "block" : "none"; }, 5000);
       }
 
-      var buildUrl = "Build";
-      var loaderUrl = buildUrl + "/WebGL.loader.js";
-      var config = {
-        arguments: [],
-        dataUrl: buildUrl + "/WebGL.data.unityweb",
-        frameworkUrl: buildUrl + "/WebGL.framework.js.unityweb",
-        codeUrl: buildUrl + "/WebGL.wasm.unityweb",
-        streamingAssetsUrl: "StreamingAssets",
-        companyName: "DefaultCompany",
-        productName: "ManifoldSimulator",
-        productVersion: "0.1.0",
-        showBanner: unityShowBanner,
-        // errorHandler: function(err, url, line) {
-        //    alert("error " + err + " occurred at line " + line);
-        //    // Return 'true' if you handled this error and don't want Unity
-        //    // to process it further, 'false' otherwise.
-        //    return true;
-        // },
-      };
+      var started = false;
+      function startSimulator() {
+        if (started) return;
+        started = true;
+        document.getElementById("gate").style.display = "none";
+        document.getElementById("unity-container").style.display = "block";
 
-      // By default, Unity keeps WebGL canvas render target size matched with
-      // the DOM size of the canvas element (scaled by window.devicePixelRatio)
-      // Set this to false if you want to decouple this synchronization from
-      // happening inside the engine, and you would instead like to size up
-      // the canvas DOM size and WebGL render target sizes yourself.
-      // config.matchWebGLToCanvasSize = false;
+        var canvas = document.querySelector("#unity-canvas");
+        var buildUrl = "Build";
+        var config = {
+          arguments: [],
+          dataUrl: buildUrl + "/WebGL.data.unityweb",
+          frameworkUrl: buildUrl + "/WebGL.framework.js.unityweb",
+          codeUrl: buildUrl + "/WebGL.wasm.unityweb",
+          streamingAssetsUrl: "StreamingAssets",
+          companyName: "DefaultCompany",
+          productName: "Manifold Simulator",
+          productVersion: "0.1.0",
+          showBanner: unityShowBanner,
+        };
 
-      // If you would like all file writes inside Unity Application.persistentDataPath
-      // directory to automatically persist so that the contents are remembered when
-      // the user revisits the site the next time, uncomment the following line:
-      // config.autoSyncPersistentDataPath = true;
-      // This autosyncing is currently not the default behavior to avoid regressing
-      // existing user projects that might rely on the earlier manual
-      // JS_FileSystem_Sync() behavior, but in future Unity version, this will be
-      // expected to change.
-
-      if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
-        // Mobile device style: fill the whole browser client area with the game canvas:
-
-        var meta = document.createElement('meta');
-        meta.name = 'viewport';
-        meta.content = 'width=device-width, height=device-height, initial-scale=1.0, user-scalable=no, shrink-to-fit=yes';
-        document.getElementsByTagName('head')[0].appendChild(meta);
-        document.querySelector("#unity-container").className = "unity-mobile";
-        canvas.className = "unity-mobile";
-
-        // To lower canvas resolution on mobile devices to gain some
-        // performance, uncomment the following line:
-        // config.devicePixelRatio = 1;
-
-
-      } else {
-        // Desktop style: Render the game canvas in a window that can be maximized to fullscreen:
-        canvas.style.width = "960px";
-        canvas.style.height = "600px";
+        var script = document.createElement("script");
+        script.src = buildUrl + "/WebGL.loader.js";
+        script.onload = function () {
+          createUnityInstance(canvas, config, function (progress) {
+            document.querySelector("#unity-progress-full").style.width = 100 * progress + "%";
+          }).then(function (unityInstance) {
+            document.querySelector("#unity-loading").style.display = "none";
+            document.querySelector("#unity-fullscreen").onclick = function () { unityInstance.SetFullscreen(1); };
+          }).catch(function (message) {
+            alert(message);
+          });
+        };
+        document.body.appendChild(script);
       }
 
-      document.querySelector("#unity-loading-bar").style.display = "block";
-
-      var script = document.createElement("script");
-      script.src = loaderUrl;
-      script.onload = () => {
-        createUnityInstance(canvas, config, (progress) => {
-          document.querySelector("#unity-progress-bar-full").style.width = 100 * progress + "%";
-              }).then((unityInstance) => {
-                document.querySelector("#unity-loading-bar").style.display = "none";
-                document.querySelector("#unity-fullscreen-button").onclick = () => {
-                  unityInstance.SetFullscreen(1);
-                };
-
-              }).catch((message) => {
-                alert(message);
-              });
-            };
-
-      document.body.appendChild(script);
-
+      // Already unlocked in this browser tab: skip the gate.
+      try {
+        if (sessionStorage.getItem(UNLOCK_KEY) === PIN_HASH) startSimulator();
+      } catch (err) { }
     </script>
   </body>
 </html>
